@@ -211,9 +211,12 @@ let Pets, Donations, Adoptions, Users;
 
     app.get('/api/donations/user/my-donations', auth, async (req, res) => {
         try {
-          const query = { 'donations.donor': req.user.uid };
-          const result = await Donations.find(query).toArray();
-          res.send(result);
+          const allDonations = await Donations.find().toArray();
+          const filtered = allDonations.map(campaign => ({
+            ...campaign,
+            donations: campaign.donations?.filter(d => d.donor === req.user.uid) || []
+          })).filter(c => c.donations.length > 0);
+          res.send(filtered);
         } catch (error) {
           res.status(500).json({ error: error.message });
         }
@@ -309,7 +312,8 @@ let Pets, Donations, Adoptions, Users;
             donorName: user?.name || req.user.email,
             donorPhoto: user?.photoURL,
             amount: parseFloat(amount),
-            donatedAt: new Date()
+            donatedAt: new Date(),
+            refundRequested: false
           };
           
           const result = await Donations.updateOne(
@@ -326,8 +330,22 @@ let Pets, Donations, Adoptions, Users;
         }
     });
 
-    app.delete('/api/donations/:id/refund', async (req, res) => {
-        res.send({ message: 'Refund processed' });
+    app.patch('/api/donations/:id/refund', auth, async (req, res) => {
+        try {
+          const { id } = req.params;
+          const { donor } = req.body;
+          
+          const result = await Donations.updateOne(
+            { _id: new ObjectId(id), 'donations.donor': donor },
+            { 
+              $set: { 'donations.$.refundRequested': true }
+            }
+          );
+          
+          res.send({ success: true, message: 'Refund requested', result });
+        } catch (error) {
+          res.status(500).json({ error: error.message });
+        }
     });
 
     app.get('/api/adoptions/my-requests', auth, async (req, res) => {
@@ -425,7 +443,11 @@ let Pets, Donations, Adoptions, Users;
     app.get('/api/users', auth, async (req, res) => {
         try {
           const result = await Users.find().toArray();
-          res.send(result);
+          const usersWithDefaults = result.map(user => ({
+            ...user,
+            isActive: user.isActive !== false
+          }));
+          res.send(usersWithDefaults);
         } catch (error) {
           res.status(500).json({ error: error.message });
         }
@@ -433,10 +455,10 @@ let Pets, Donations, Adoptions, Users;
 
     app.patch('/api/users/:id/make-admin', auth, async (req, res) => {
         try {
-          const filter = { uid: req.params.id };
+          const filter = { _id: new ObjectId(req.params.id) };
           const updateDoc = { $set: { role: 'admin' } };
           const result = await Users.updateOne(filter, updateDoc);
-          res.send(result);
+          res.send({ success: true, message: 'User promoted to admin', result });
         } catch (error) {
           res.status(500).json({ error: error.message });
         }
@@ -444,10 +466,10 @@ let Pets, Donations, Adoptions, Users;
 
     app.patch('/api/users/:id/ban', auth, async (req, res) => {
         try {
-          const filter = { uid: req.params.id };
-          const updateDoc = { $set: { banned: true } };
+          const filter = { _id: new ObjectId(req.params.id) };
+          const updateDoc = { $set: { isActive: false } };
           const result = await Users.updateOne(filter, updateDoc);
-          res.send(result);
+          res.send({ success: true, message: 'User banned', result });
         } catch (error) {
           res.status(500).json({ error: error.message });
         }
@@ -461,6 +483,7 @@ let Pets, Donations, Adoptions, Users;
             name: req.body.name,
             photoURL: req.body.photoURL,
             role: 'user',
+            isActive: true,
             createdAt: new Date()
           };
           
