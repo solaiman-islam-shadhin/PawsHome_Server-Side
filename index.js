@@ -57,16 +57,21 @@ let Pets, Donations, Adoptions, Users;
 
     app.get('/api/pets', async (req, res) => {
         try {
-          const { page = 1, limit = 10, search = '', category = '' } = req.query;
+          const { page = 1, limit = 10, search = '', category = '', sort = 'createdAt', order = 'desc' } = req.query;
           const query = { adopted: false };
           
           if (search) query.name = { $regex: search, $options: 'i' };
           if (category) query.category = { $regex: category, $options: 'i' };
           
+          const sortOptions = {};
+          if (sort) {
+            sortOptions[sort] = order === 'asc' ? 1 : -1;
+          }
+
           const pageNum = parseInt(page);
           const limitNum = parseInt(limit);
           const skip = (pageNum - 1) * limitNum;
-          const result = await Pets.find(query).skip(skip).limit(limitNum).toArray();
+          const result = await Pets.find(query).sort(sortOptions).skip(skip).limit(limitNum).toArray();
           const total = await Pets.countDocuments(query);
           const totalPages = Math.ceil(total / limitNum);
           
@@ -475,31 +480,49 @@ let Pets, Donations, Adoptions, Users;
         }
     });
 
+    // --- FIX APPLIED HERE: Using $setOnInsert to preserve existing roles ---
     app.post('/api/auth/register', auth, async (req, res) => {
         try {
-          const userData = {
-            uid: req.user.uid,
+          const filter = { uid: req.user.uid };
+          
+          // $set fields: These fields are updated every time the user registers/logs in (profile synchronization)
+          const setFields = {
             email: req.user.email,
             name: req.body.name,
             photoURL: req.body.photoURL,
-            role: 'user',
+          };
+          
+          // $setOnInsert fields: These fields are ONLY set when a NEW document is created.
+          // This prevents overwriting the 'role' if the user already exists (e.g., as 'admin').
+          const onInsertFields = {
+            uid: req.user.uid,
+            role: 'user', // Default role for brand new users
             isActive: true,
             createdAt: new Date()
           };
+
+          const updateDoc = {
+            $set: setFields,
+            $setOnInsert: onInsertFields
+          };
           
-          const filter = { uid: req.user.uid };
-          const updateDoc = { $set: userData };
-          const result = await Users.updateOne(filter, updateDoc, { upsert: true });
+          // Perform the upsert operation
+          await Users.updateOne(filter, updateDoc, { upsert: true });
           
-          res.send({ success: true, user: userData });
+          // Fetch the final user data (which now includes the preserved role)
+          const finalUser = await Users.findOne(filter);
+          
+          res.send({ success: true, user: finalUser });
         } catch (error) {
           res.status(500).json({ error: error.message });
         }
     });
+    // ---------------------------------------------------------------------
 
     app.get('/api/auth/me', auth, async (req, res) => {
         try {
           const user = await Users.findOne({ uid: req.user.uid });
+          // Ensure we return the role from the MongoDB user object
           res.send({ id: req.user.uid, email: req.user.email, ...user });
         } catch (error) {
           res.status(500).json({ error: error.message });
